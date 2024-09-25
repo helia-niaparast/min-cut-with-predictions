@@ -1,0 +1,243 @@
+from itertools import combinations
+import networkx as nx
+from networkx.utils import UnionFind
+import numpy as np
+import math
+import copy
+import random
+
+class Graph(object):
+    def __init__(self, adj):
+        self.adj = adj
+    
+    def number_of_nodes(self):
+        return len(self.adj.keys())
+
+    def get_edge_list(self):
+        #output has two copies of each edge
+        edges = []
+        for k in self.adj.keys():
+            for v in self.adj[k].keys():
+                w = self.adj[k][v]
+                edges.append([k, v, w])
+        
+        return edges 
+
+    def merge(self, u, v):
+        for k in self.adj[v].keys(): 
+            if k != u:
+                if k in self.adj[u]:
+                    self.adj[u].update({k : self.adj[u][k] + self.adj[v][k]})
+                else:
+                    self.adj[u].update({k: self.adj[v][k]})
+            
+        del self.adj[u][v]
+        del self.adj[v]
+
+        for k in self.adj.keys():
+            if v in self.adj[k].keys():
+                w = self.adj[k][v]
+                del self.adj[k][v]
+                if u in self.adj[k].keys():
+                    self.adj[k].update({u: self.adj[k][u] + w})
+                else:
+                    self.adj[k].update({u: w})
+        
+    def boost_edge(self, u, v, boost_factor):
+        w = self.adj[u][v]
+        w *= boost_factor
+        self.adj[u].update({v: w})
+        self.adj[v].update({u: w})
+
+def convert_graph(graph):
+    #converts nx.Graph to Graph
+    adj = {}
+
+    for v in graph.nodes():
+        adj[v] = {}
+    
+    for u,v in graph.edges():
+        w = graph[u][v]['weight']
+        adj[u].update({v: w})
+        adj[v].update({u: w})
+    
+    return Graph(adj)
+
+def minimum_spanning_edges(G, weight = 'weight'):
+    tree = []
+    subtrees = UnionFind()
+    edges = sorted(G.edges(data = True), key = lambda t: t[2].get(weight, 1))
+    for u, v, d in edges:
+        if subtrees[u] != subtrees[v]:
+            tree.append((u, v))
+            subtrees.union(u, v)
+    
+    return tree
+
+def find_min_cut(graph):
+    G = nx.Graph()
+    edges = graph.get_edge_list()
+    for u, v, w in edges:
+        G.add_edge(u, v, weight = w)
+
+    return nx.stoer_wagner(G)
+
+def Karger(graph):
+    G = nx.Graph()
+    edges = graph.get_edge_list()
+    for u, v, w in edges:
+        if w != 0:
+            g = np.random.gumbel(0, 1)
+            G.add_edge(u, v, weight = -g - math.log(w))
+    
+    T = minimum_spanning_edges(G)
+    n = len(G)
+    F = nx.Graph(T[0:n-2])
+    if len(F) != len(G):
+        for v in G.nodes():
+            F.add_node(v)
+    
+    S = [F.subgraph(c).copy() for c in nx.connected_components(F)]
+    partition = (list(S[0]), list(S[1]))
+    cut_size = 0
+    for u, v, w in edges:
+        if(u in partition[0] and v in partition[1]):
+            cut_size += w
+    
+    return cut_size, partition
+
+def boost_graph(graph, partition, boost_factor):
+    adj = copy.deepcopy(graph.adj)
+    G = Graph(adj)
+    for i in range(len(partition)):
+        S = partition[i]
+        for u, v in list(combinations(S, 2)):
+            if u in adj[v].keys():
+                G.boost_edge(u, v, boost_factor)
+    
+    return G
+
+def boost_edges(graph, edges, boost_factor):
+    adj = copy.deepcopy(graph.adj)
+    G = Graph(adj)
+
+    for u,v in edges:
+        if u in adj[v].keys():
+            G.boost_edge(u, v, boost_factor)
+    
+    return G
+
+def boosted_Karger(graph, boosted_graph):
+    cut, partition = Karger(boosted_graph)
+    S1, S2 = partition
+    edges = graph.get_edge_list()
+    cut_size = 0
+    for u, v, w in edges:
+        if u in S1 and v in S2:
+            cut_size += w
+    
+    return cut_size, partition
+
+def Karger_until_min_cut(graph, cut_size, reps, cap):
+    run_time = []
+    for i in range(reps):
+        cnt = 1
+        curr_cut = Karger(graph)[0]
+        while(curr_cut > cut_size and cnt < cap):
+            curr_cut = Karger(graph)[0]
+            cnt += 1
+        
+        run_time.append(cnt)
+        print("K-", cnt)
+    
+    return run_time
+
+def boosted_Karger_until_min_cut(graph, boosted_graph, cut_size, reps, cap):
+    run_time = []
+    for i in range(reps):
+        cnt = 1
+        curr_cut = boosted_Karger(graph, boosted_graph)[0]
+        while(curr_cut > cut_size and cnt < cap):
+            curr_cut = boosted_Karger(graph, boosted_graph)[0]
+            cnt += 1
+
+        run_time.append(cnt)
+        print("B-", cnt)
+    
+    return run_time
+
+def add_edge_weight(G, u, v, w):
+    w_prev = 0
+    if G.has_edge(u, v):
+        w_prev = G[u][v]["weight"]
+    
+    G.add_edge(u, v, weight = w_prev + w)
+    
+    return G
+
+def build_graph(file):
+    G = nx.Graph()
+    with open(file) as f:
+        lines = f.read().splitlines(True)
+        for line in lines:
+            l = line.strip().split(' ')
+            edge = [int(x) for x in l]
+            if len(edge) == 4:
+                u, v, w, t = edge
+                G = add_edge_weight(G, u, v, w)
+            else:
+                G = add_edge_weight(G, edge[0], edge[1], 1)
+    return G 
+
+def get_error(graph, real_partition, pred_partition):
+    real_cut_edges = get_weighted_cut_edges(graph, real_partition)
+    pred_cut_edges = get_weighted_cut_edges(graph, pred_partition)
+
+    k = sum(e[2] for e in real_cut_edges)
+    fn = list(set(real_cut_edges) - set(pred_cut_edges))
+    fp = list(set(pred_cut_edges) - set(real_cut_edges))
+
+    if k != 0:
+        alpha1 = sum(e[2] for e in fn)/k
+        alpha2 = sum(e[2] for e in fp)/k
+    else:
+        alpha1, alpha2 = -1, -1
+
+    return alpha1, alpha2
+
+def run_real_datasets(filename, eps):
+    G = build_graph(filename)
+    n, m = G.number_of_nodes(), G.number_of_edges()
+    print("n:", n)
+    print("m:", m)
+
+    min_cut, partition = nx.stoer_wagner(G)
+    print("MIN:", min_cut)
+    print("PARTITION: ", partition)
+
+    edges = []
+    for u,v in G.edges():
+        edges.append((u,v))
+
+    sample_size = int(eps*m)
+    sample_indices = random.sample(range(m), sample_size)
+    sample_edges = [edges[i] for i in sample_indices]
+    sample_graph = nx.Graph()
+    for u,v in sample_edges:
+        w = G[u][v]['weight']
+        sample_graph.add_edge(u, v, weight = w)
+
+    sample_min_cut, sample_partition = nx.stoer_wagner(sample_graph)
+    print("SAMPLE MIN CUT: ", sample_min_cut)
+    print("SAMPLE PARTITION: ", sample_partition)
+
+    GG = convert_graph(G)
+    reps, cap, boost_factor = 10, n**2, n
+    GB = boost_graph(GG, sample_partition, boost_factor)
+    
+    K = Karger_until_min_cut(GG, min_cut, reps, cap)
+    print("KARGER:", K)
+    B = boosted_Karger_until_min_cut(GG, GB, min_cut, reps, cap)
+    print("BOOSTED:", B)
+
+run_real_datasets("frb30-15-5.mtx", 0.1)
